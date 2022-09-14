@@ -2,9 +2,7 @@ import tensorflow as tf
 import numpy as np
 from tensorflow import keras
 from tensorflow.keras import layers
-import tensorflow_addons as tfa
 import matplotlib.pyplot as plt
-import plotly.express as px
 from PIL import Image
 import numpy as np
 import glob
@@ -13,6 +11,7 @@ import scipy.io
 import absl.logging
 import re
 import random
+from tqdm import tqdm
 
 ####################################################################################################
 ###> Remove warnings & info message...
@@ -41,35 +40,25 @@ VALIDATION_RATIO   = .2
 IMAGE_SIZE         = (224, 224)
 
 # SAVES
-SAVES_PATH = "./saves/"
-GRAPHS_PATH = SAVES_PATH + "graphs/"
-GRAPHS_TRAINING_LOSS_FILE_NAME = "training_loss_history.png"
-GRAPHS_TRAINING_ACCURACY_FILE_NAME = "training_accuracy_history.png"
-CHECKPOINTS_PATH = SAVES_PATH + "checkpoints/"
-CHECKPOINTS_FILE_NAME = "best_weights"
+SAVES_PATH                          = "./saves/"
+GRAPHS_PATH                         = SAVES_PATH + "graphs/"
+GRAPHS_TRAINING_LOSS_FILE_NAME      = "training_loss_history.png"
+GRAPHS_TRAINING_ACCURACY_FILE_NAME  = "training_accuracy_history.png"
+CHECKPOINTS_PATH                    = SAVES_PATH + "checkpoints/"
+CHECKPOINTS_FILE_NAME               = "best_weights"
 
 # TRAIN
-TRAINING_PATIENCE = 10
-EPOCHS = 250
-BATCH_SIZE = 32
-PATCH_SIZE = 32
-LEARNING_RATE = 0.001
-WEIGHT_DECAY = 0.0001
-NUM_PATCHES = (IMAGE_SIZE[0] // PATCH_SIZE) * (IMAGE_SIZE[1] // PATCH_SIZE)
-PROJECTION_DIM = 64
-NUM_HEADS = 4
-# Size of the transformer layers
-TRANSFORMER_UNITS = [
-    PROJECTION_DIM * 2,
-    PROJECTION_DIM,
-]
-TRANSFORMER_LAYER = 4
-# Size of the dense layers
-MLP_HEAD_UNITS = [2048, 1024, 512, 64, 32]  
+TRAINING_PATIENCE   = 3
+EPOCHS              = 250
+BATCH_SIZE          = 16
+DROPOUT             = .5
+LEARNING_RATE       = 0.001
 
 # TEST
-IMAGE_IDS_TO_TEST = [ 435, 312 ]
-# IMAGE_IDS_TO_TEST = [ random.randint(1, 50) for i in range(3)]
+NUMBER_OF_IMAGES_TO_TEST    = 5
+MIN_ID_TO_TEST              = 1
+MAX_ID_TO_TEST              = 50
+IMAGE_IDS_TO_TEST           = [ random.randint(MIN_ID_TO_TEST, MAX_ID_TO_TEST) for _ in range(NUMBER_OF_IMAGES_TO_TEST)]
 
 ####################################################################################################
 ###> Launching the programm
@@ -145,12 +134,12 @@ if "preprocess" in TODO:
 ####################################################################################################
 ###> Generate the datasets
 
-def plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color):
+def plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color, linestyle=""):
 
     plt.plot(
         [ top_left_x, top_left_x, bottom_right_x, bottom_right_x, top_left_x ],
         [ top_left_y, bottom_right_y, bottom_right_y, top_left_y, top_left_y ], 
-        color=color, linestyle = 'dashed'
+        color=color, linestyle=linestyle
     )
 
 def displayImageWithTargets(img, tgts=None, preds=None, show=True, figure_name="Image with targets"):
@@ -160,17 +149,17 @@ def displayImageWithTargets(img, tgts=None, preds=None, show=True, figure_name="
 
     # Image dimentions
     image_w, image_h = image.size[:2]
-    plotRectangle(0, 0, image_w, image_h, color="grey")
+    plotRectangle(0, 0, image_w, image_h, color="grey", linestyle="")
 
     # Targets
     if not(tgts is None):
         top_left_x, top_left_y, bottom_right_x, bottom_right_y = tgts[3], tgts[1], tgts[2], tgts[0]
-        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="green")
+        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="green", linestyle="dashed")
 
     # Pred
     if not(preds is None):
         top_left_x, top_left_y, bottom_right_x, bottom_right_y = preds[3], preds[1], preds[2], preds[0]
-        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="orange")
+        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="orange", linestyle="dashed")
 
     if show:
         plt.show()
@@ -205,11 +194,15 @@ def extractDataFromId(id):
     return ( image, box_coords )
 
 if "train" in TODO or "evaluate" in TODO:
+
+    print("\nLoading the datasets...")
+
     images  = []
     targets = []
     ids = [ list(map(int, re.findall(r'\d+', f)))[-1]  for f in os.listdir(IMAGES_FOLDER)  if os.path.isfile(os.path.join(IMAGES_FOLDER, f)) ]
     random.shuffle(ids)
-    for id in ids:
+
+    for id in tqdm(ids):
 
         image, (top_left_x, top_left_y, bottom_right_x, bottom_right_y) = extractDataFromId(id)
         image_w, image_h = image.size[:2]
@@ -219,8 +212,8 @@ if "train" in TODO or "evaluate" in TODO:
 
         # Store position in %
         targets.append((
-            float(top_left_x)  / image_w,
-            float(top_left_y)  / image_h,
+            float(top_left_x)        / image_w,
+            float(top_left_y)        / image_h,
             float(bottom_right_x)    / image_w,
             float(bottom_right_y)    / image_h,
         ))
@@ -234,8 +227,6 @@ if "train" in TODO or "evaluate" in TODO:
     # Convert the list to numpy array, split to train and test dataset
     r = int(len(images)*TRAINING_RATIO)
 
-    print()
-
     if "train" in TODO:
         (x_train), (y_train) = ( np.asarray(images[:r]),   np.asarray(targets[:r])   )
         print("Working with %s images, including %s for training and %s for validation" % (len(images), int(len(x_train)*(1-VALIDATION_RATIO)), int(len(x_train)*VALIDATION_RATIO)))
@@ -248,144 +239,62 @@ if "train" in TODO or "evaluate" in TODO:
 ###> Build a model
 
 if "train" in TODO or "evaluate" in TODO or "test" in TODO:
+    
+    def make_model(input_shape):
+        inputs = keras.Input(shape=input_shape)
 
-    def mlp(x, hidden_units, dropout_rate):
-        for units in hidden_units:
-            x = layers.Dense(units, activation=tf.nn.gelu)(x)
-            x = layers.Dropout(dropout_rate)(x)
-        return x
+        # Entry block
+        x = layers.Rescaling(1.0 / 255)(inputs)
 
-    class Patches(layers.Layer):
-        def __init__(self, patch_size):
-            super(Patches, self).__init__()
-            self.patch_size = patch_size
+        x = layers.Conv2D(32, 3, strides=2, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation("relu")(x)
 
-        # Override function to avoid error while saving model
-        def get_config(self):
-            config = super().get_config().copy()
-            config.update(
-                {
-                    "input_shape": self.input_shape,
-                    "patch_size": self.patch_size,
-                    "num_patches": self.num_patches,
-                    "projection_dim": self.projection_dim,
-                    "num_heads": self.num_heads,
-                    "transformer_units": self.transformer_units,
-                    "transformer_layers": self.self.transformer_layers,
-                    "mlp_head_units": self.mlp_head_units,
-                }
-            )
-            return config
+        x = layers.Conv2D(64, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation("relu")(x)
 
-        def call(self, images):
-            batch_size = tf.shape(images)[0]
-            patches = tf.image.extract_patches(
-                images=images,
-                sizes=[1, self.patch_size, self.patch_size, 1],
-                strides=[1, self.patch_size, self.patch_size, 1],
-                rates=[1, 1, 1, 1],
-                padding="VALID",
-            )
-            # return patches
-            return tf.reshape(patches, [batch_size, -1, patches.shape[-1]])
+        previous_block_activation = x  # Set aside residual
 
-    class PatchEncoder(layers.Layer):
-        def __init__(self, num_patches, projection_dim):
-            super(PatchEncoder, self).__init__()
-            self.num_patches = num_patches
-            self.projection = layers.Dense(units=projection_dim)
-            self.position_embedding = layers.Embedding(
-                input_dim=num_patches, output_dim=projection_dim
-            )
+        for size in [128, 256, 512, 728]:
+            x = layers.Activation("relu")(x)
+            x = layers.SeparableConv2D(size, 3, padding="same")(x)
+            x = layers.BatchNormalization()(x)
 
-        # Override function to avoid error while saving model
-        def get_config(self):
-            config = super().get_config().copy()
-            config.update(
-                {
-                    "input_shape": self.input_shape,
-                    "patch_size": self.patch_size,
-                    "num_patches": self.num_patches,
-                    "projection_dim": self.projection_dim,
-                    "num_heads": self.num_heads,
-                    "transformer_units": self.transformer_units,
-                    "transformer_layers": self.transformer_layers,
-                    "mlp_head_units": self.mlp_head_units,
-                }
-            )
-            return config
+            x = layers.Activation("relu")(x)
+            x = layers.SeparableConv2D(size, 3, padding="same")(x)
+            x = layers.BatchNormalization()(x)
 
-        def call(self, patch):
-            positions = tf.range(start=0, limit=self.num_patches, delta=1)
-            encoded = self.projection(patch) + self.position_embedding(positions)
-            return encoded
+            x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
 
-    def create_vit_object_detector(
-        input_shape,
-        patch_size,
-        num_patches,
-        projection_dim,
-        num_heads,
-        transformer_units,
-        transformer_layers,
-        mlp_head_units,
-    ):
-        inputs = layers.Input(shape=input_shape)
-        # Create patches
-        patches = Patches(patch_size)(inputs)
-        # Encode patches
-        encoded_patches = PatchEncoder(num_patches, projection_dim)(patches)
+            # Project residual
+            residual = layers.Conv2D(size, 1, strides=2, padding="same")(previous_block_activation)
+            x = layers.add([x, residual])  # Add back residual
+            previous_block_activation = x  # Set aside next residual
 
-        # Create multiple layers of the Transformer block.
-        for _ in range(transformer_layers):
-            # Layer normalization 1.
-            x1 = layers.LayerNormalization(epsilon=1e-6)(encoded_patches)
-            # Create a multi-head attention layer.
-            attention_output = layers.MultiHeadAttention(
-                num_heads=num_heads, key_dim=projection_dim, dropout=0.1
-            )(x1, x1)
-            # Skip connection 1.
-            x2 = layers.Add()([attention_output, encoded_patches])
-            # Layer normalization 2.
-            x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
-            # MLP
-            x3 = mlp(x3, hidden_units=transformer_units, dropout_rate=0.1)
-            # Skip connection 2.
-            encoded_patches = layers.Add()([x3, x2])
+        x = layers.SeparableConv2D(1024, 3, padding="same")(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation("relu")(x)
 
-        # Create a [batch_size, projection_dim] tensor.
-        representation = layers.LayerNormalization(epsilon=1e-6)(encoded_patches)
-        representation = layers.Flatten()(representation)
-        representation = layers.Dropout(0.3)(representation)
-        # Add MLP.
-        features = mlp(representation, hidden_units=mlp_head_units, dropout_rate=0.3)
+        x = layers.GlobalAveragePooling2D()(x)
+        x = layers.Dropout(DROPOUT)(x)
+        outputs = layers.Dense(4, activation="relu")(x)
 
-        bounding_box = layers.Dense(4)(
-            features
-        )  # Final four neurons that output bounding box
+        return keras.Model(inputs, outputs)
 
-        # return Keras model.
-        return keras.Model(inputs=inputs, outputs=bounding_box)
+    model = make_model(input_shape=IMAGE_SIZE + (3,))
+    # keras.utils.plot_model(model, show_shapes=True)
 
-    model = create_vit_object_detector(
-        (IMAGE_SIZE[0], IMAGE_SIZE[0], 3),
-        PATCH_SIZE,
-        NUM_PATCHES,
-        PROJECTION_DIM,
-        NUM_HEADS,
-        TRANSFORMER_UNITS,
-        TRANSFORMER_LAYER,
-        MLP_HEAD_UNITS,
-    )
+    pass
 
 ####################################################################################################
 ###> Train the model
 
 if "train" in TODO or "evaluate" in TODO or "test" in TODO:
     model.compile(
-        optimizer=tfa.optimizers.AdamW(learning_rate=LEARNING_RATE, weight_decay=WEIGHT_DECAY),
-        loss=keras.losses.MeanSquaredError(),
-        # metrics=["accuracy"],
+        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+        loss="mse",
+        metrics=["accuracy"],
     )
 
     # keras.utils.plot_model(model, show_shapes=True)
@@ -404,7 +313,7 @@ if "train" in TODO:
         validation_split=VALIDATION_RATIO,
         callbacks=[
             keras.callbacks.ModelCheckpoint(CHECKPOINTS_PATH + CHECKPOINTS_FILE_NAME, save_best_only=True, save_weights_only=True),
-            # keras.callbacks.EarlyStopping(monitor="val_loss", patience=TRAINING_PATIENCE),
+            keras.callbacks.EarlyStopping(monitor="val_loss", restore_best_weights=True, patience=TRAINING_PATIENCE),
         ],
     )
 
@@ -421,14 +330,14 @@ if "train" in TODO:
         plt.ylabel('Loss')
         plt.savefig(GRAPHS_PATH + GRAPHS_TRAINING_LOSS_FILE_NAME)
 
-        # plt.figure("Accuracy history")
-        # plt.plot(h['accuracy'],     color='red',   label='Train accuracy')
-        # plt.plot(h['val_accuracy'], color='green', label='Val accuracy')
-        # plt.legend()
-        # plt.title('Training and validation accuracy over the time')
-        # plt.xlabel('Epoch')
-        # plt.ylabel('Accuracy')
-        # plt.savefig(GRAPHS_PATH + GRAPHS_TRAINING_ACCURACY_FILE_NAME)
+        plt.figure("Accuracy history")
+        plt.plot(h['accuracy'],     color='red',   label='Train accuracy')
+        plt.plot(h['val_accuracy'], color='green', label='Val accuracy')
+        plt.legend()
+        plt.title('Training and validation accuracy over the time')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.savefig(GRAPHS_PATH + GRAPHS_TRAINING_ACCURACY_FILE_NAME)
 
         if show:
             plt.show()
@@ -459,11 +368,11 @@ if "evaluate" in TODO:
             verbose=0
         )
 
-        loss = results# [0]
-        # acc  = results[1]
+        loss = results[0]
+        acc  = results[1]
         
         print("Test Loss: {:.5f}".format(loss))
-        # print("Test Accuracy: {:.2f}%".format(acc * 100))
+        print("Test Accuracy: {:.2f}%".format(acc * 100))
         
     evaluate_model(model, x_test, y_test)
 
