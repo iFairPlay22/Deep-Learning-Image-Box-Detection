@@ -1,16 +1,17 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow import keras
-from tensorflow.keras import layers
+from keras.models import Sequential, Model
+from keras.layers import Conv2D, MaxPooling2D, Dense, Activation, Dropout, Flatten, BatchNormalization
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
 import glob
 import os
-import scipy.io
 import absl.logging
 import re
 import random
+from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 ####################################################################################################
@@ -31,9 +32,9 @@ TODO = [
 ]
 
 # DATASETS
-DATASET_FOLDER     = "datasets/caltech-101/"
-IMAGES_FOLDER      = DATASET_FOLDER + "101_ObjectCategories/airplanes/"
-ANNOTATIONS_FOLDER = DATASET_FOLDER + "Annotations/Airplanes_Side_2/"
+DATASET_FOLDER     = "datasets/"
+IMAGES_FOLDER      = DATASET_FOLDER + "images/"
+ANNOTATIONS_FOLDER = DATASET_FOLDER + "annotations/"
 ALLOWED_EXTENSIONS = [ ".jpg", ".jpeg", ".png" ]
 TRAINING_RATIO     = .8
 VALIDATION_RATIO   = .2
@@ -47,10 +48,15 @@ GRAPHS_TRAINING_ACCURACY_FILE_NAME  = "training_accuracy_history.png"
 CHECKPOINTS_PATH                    = SAVES_PATH + "checkpoints/"
 CHECKPOINTS_FILE_NAME               = "best_weights"
 
+# DETECTION
+MAX_DETECTABLE_OBJECTS = 20
+MAX_POINTS_BY_OBJECT   = 4
+MAX_POINTS_BY_IMAGE    = MAX_DETECTABLE_OBJECTS * MAX_POINTS_BY_OBJECT
+
 # TRAIN
-TRAINING_PATIENCE   = 3
-EPOCHS              = 250
-BATCH_SIZE          = 16
+TRAINING_PATIENCE   = 10
+EPOCHS              = 50
+BATCH_SIZE          = 32
 DROPOUT             = .5
 LEARNING_RATE       = 0.001
 
@@ -96,9 +102,9 @@ if "preprocess" in TODO:
 
     def isCorrupted(fileimage):
 
-        with open(fileimage, "rb") as fobj:
-            if not tf.compat.as_bytes("JFIF") in fobj.peek(10):
-                return True
+        # with open(fileimage, "rb") as fobj:
+        #     if not tf.compat.as_bytes("JFIF") in fobj.peek(10):
+        #         return True
 
         try:
             with Image.open(fileimage) as img:
@@ -134,11 +140,68 @@ if "preprocess" in TODO:
 ####################################################################################################
 ###> Generate the datasets
 
-def plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color, linestyle=""):
+def getPathsByIdFromFolder(folder):
+
+    paths = {}
+
+    for f in os.listdir(folder):
+        full_path = os.path.join(folder, f)
+        if os.path.isfile(full_path):
+            currentId = list(map(int, re.findall(r'\d+', f)))[-1]
+            paths[currentId] = full_path
+    
+    return paths
+
+DATASETS_BOX_PATHS = getPathsByIdFromFolder(IMAGES_FOLDER)
+DATASETS_ANNOTATIONS_PATHS = getPathsByIdFromFolder(ANNOTATIONS_FOLDER)
+
+def getPathsFromId(id):
+
+    imagePath      = DATASETS_BOX_PATHS[id]
+    annotationPath = DATASETS_ANNOTATIONS_PATHS[id]
+
+    if not(imagePath) or not(annotationPath):
+        print("\nWarning: Can't find the image with the id" + str(image_id_to_test))
+        return None
+
+    return imagePath, annotationPath
+
+def extractDataFromId(id):
+
+    image_path, annotation_path = getPathsFromId(id)
+    with open(annotation_path, 'r') as annotation_file:
+        annotation_data = BeautifulSoup(annotation_file.read(), "xml")
+        
+    # Extract image
+    image = keras.utils.load_img(image_path)
+    image_w = int(annotation_data.find('width').text)
+    image_h = int(annotation_data.find('height').text)
+
+    # Image processing
+    processed_image = keras.utils.img_to_array(image.resize(IMAGE_SIZE))
+
+    # Extract boxes
+    boxes_data = annotation_data.find_all('bndbox')
+    boxes = [ (int(box.find('xmin').text), int(box.find('ymin').text), int(box.find('xmax').text), int(box.find('ymax').text)) for box in boxes_data ]
+    coords = [ coord for box in boxes for coord in box ]
+
+    # Boxes processing
+
+    #> Store position in %
+    full_percentage_boxes = [ ( float(min_x) / image_w, float(min_y) / image_h, float(max_x) / image_w, float(max_y) / image_h ) for min_x, min_y, max_x, max_y in boxes ]
+    full_percentage_coords = [ full_percentage_coord for full_percentage_box in full_percentage_boxes for full_percentage_coord in full_percentage_box ]
+
+    #> Complete with empty boxes
+    empty_percentage_coords = [ 0 for i in range(len(full_percentage_coords), MAX_POINTS_BY_IMAGE) ]
+    processed_percentage_coords =  full_percentage_coords + empty_percentage_coords
+
+    return ( ( image, coords ), ( processed_image, processed_percentage_coords ) )
+
+def plotRectangle(min_x, min_y, max_x, max_y, color, linestyle="solid"):
 
     plt.plot(
-        [ top_left_x, top_left_x, bottom_right_x, bottom_right_x, top_left_x ],
-        [ top_left_y, bottom_right_y, bottom_right_y, top_left_y, top_left_y ], 
+        [ min_x, max_x, max_x, min_x, min_x ],
+        [ min_y, min_y, max_y, max_y, min_y ], 
         color=color, linestyle=linestyle
     )
 
@@ -149,49 +212,22 @@ def displayImageWithTargets(img, tgts=None, preds=None, show=True, figure_name="
 
     # Image dimentions
     image_w, image_h = image.size[:2]
-    plotRectangle(0, 0, image_w, image_h, color="grey", linestyle="")
+    plotRectangle(0, 0, image_w, image_h, color="grey", linestyle="solid")
 
     # Targets
     if not(tgts is None):
-        top_left_x, top_left_y, bottom_right_x, bottom_right_y = tgts[3], tgts[1], tgts[2], tgts[0]
-        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="green", linestyle="dashed")
+        for i in range(len(tgts)//4):
+            min_x, min_y, max_x, max_y = tgts[i*4:i*4+4]
+            plotRectangle(min_x, min_y, max_x, max_y, color="white", linestyle="dashed")
 
     # Pred
     if not(preds is None):
-        top_left_x, top_left_y, bottom_right_x, bottom_right_y = preds[3], preds[1], preds[2], preds[0]
-        plotRectangle(top_left_x, top_left_y, bottom_right_x, bottom_right_y, color="orange", linestyle="dashed")
+        for i in range(len(preds)//4):
+            min_x, min_y, max_x, max_y = preds[i*4:i*4+4]
+            plotRectangle(min_x, min_y, max_x, max_y, color="red", linestyle="dashed")
 
     if show:
         plt.show()
-
-def getPathFromFolderAndId(folder, id):
-    for f in os.listdir(folder):
-        full_path = os.path.join(folder, f)
-        if os.path.isfile(full_path):
-            currentId = list(map(int, re.findall(r'\d+', f)))[-1]
-            if currentId == id:
-                return full_path
-    return None
-
-def getPathsFromId(id):
-
-    imagePath      = getPathFromFolderAndId(IMAGES_FOLDER, id)
-    annotationPath = getPathFromFolderAndId(ANNOTATIONS_FOLDER, id)
-
-    if not(imagePath) or not(annotationPath):
-        print("\nWarning: Can't find the image with the id" + str(image_id_to_test) + " : test cancelled...")
-        return None
-
-    return imagePath, annotationPath
-
-def extractDataFromId(id):
-
-    image_path, annotation_path = getPathsFromId(id)
-
-    image = keras.utils.load_img(image_path)
-    box_coords  = tuple(scipy.io.loadmat(annotation_path)["box_coord"][0])
-    
-    return ( image, box_coords )
 
 if "train" in TODO or "evaluate" in TODO:
 
@@ -199,26 +235,16 @@ if "train" in TODO or "evaluate" in TODO:
 
     images  = []
     targets = []
-    ids = [ list(map(int, re.findall(r'\d+', f)))[-1]  for f in os.listdir(IMAGES_FOLDER)  if os.path.isfile(os.path.join(IMAGES_FOLDER, f)) ]
+    ids = list(DATASETS_BOX_PATHS.keys())
     random.shuffle(ids)
 
     for id in tqdm(ids):
 
-        image, (top_left_x, top_left_y, bottom_right_x, bottom_right_y) = extractDataFromId(id)
-        image_w, image_h = image.size[:2]
+        ( ( image, coords ), ( processed_image, processed_coords ) ) = extractDataFromId(id)
+        images.append(processed_image)
+        targets.append(processed_coords)
 
-        # Resize image for ai processing
-        images.append(keras.utils.img_to_array(image.resize(IMAGE_SIZE)))
-
-        # Store position in %
-        targets.append((
-            float(top_left_x)        / image_w,
-            float(top_left_y)        / image_h,
-            float(bottom_right_x)    / image_w,
-            float(bottom_right_y)    / image_h,
-        ))
-
-        # displayImageWithTargets(image, (top_left_x, top_left_y, bottom_right_x, bottom_right_y), figure_name="1", show=False)
+        # displayImageWithTargets(image, coords, figure_name="1", show=False)
         # plt.show()
 
         pass
@@ -241,46 +267,43 @@ if "train" in TODO or "evaluate" in TODO:
 if "train" in TODO or "evaluate" in TODO or "test" in TODO:
     
     def make_model(input_shape):
-        inputs = keras.Input(shape=input_shape)
+        kernel_size = 3
+    
+        model = Sequential()
 
-        # Entry block
-        x = layers.Rescaling(1.0 / 255)(inputs)
+        model.add(Conv2D(16, (kernel_size), strides=(1,1), padding='valid', input_shape=input_shape))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+    #     model.add(MaxPooling2D((2,2)))
 
-        x = layers.Conv2D(32, 3, strides=2, padding="same")(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation("relu")(x)
+        model.add(Conv2D(32, (kernel_size), strides=(1,1), padding='valid'))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+    #     model.add(MaxPooling2D((2,2)))
 
-        x = layers.Conv2D(64, 3, padding="same")(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation("relu")(x)
+        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+    #     model.add(MaxPooling2D((2,2)))
 
-        previous_block_activation = x  # Set aside residual
+        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+        model.add(MaxPooling2D((2,2)))
 
-        for size in [128, 256, 512, 728]:
-            x = layers.Activation("relu")(x)
-            x = layers.SeparableConv2D(size, 3, padding="same")(x)
-            x = layers.BatchNormalization()(x)
+        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
+        model.add(BatchNormalization())
+        model.add(Activation('relu'))
+        model.add(MaxPooling2D((2,2)))
+        
+        model.add(Flatten())
+    #     model.add(Dense(64, activation='relu'))
+        model.add(Dropout(DROPOUT))
 
-            x = layers.Activation("relu")(x)
-            x = layers.SeparableConv2D(size, 3, padding="same")(x)
-            x = layers.BatchNormalization()(x)
+        model.add(Dense(MAX_POINTS_BY_IMAGE, activation='relu'))
 
-            x = layers.MaxPooling2D(3, strides=2, padding="same")(x)
+        return model
 
-            # Project residual
-            residual = layers.Conv2D(size, 1, strides=2, padding="same")(previous_block_activation)
-            x = layers.add([x, residual])  # Add back residual
-            previous_block_activation = x  # Set aside next residual
-
-        x = layers.SeparableConv2D(1024, 3, padding="same")(x)
-        x = layers.BatchNormalization()(x)
-        x = layers.Activation("relu")(x)
-
-        x = layers.GlobalAveragePooling2D()(x)
-        x = layers.Dropout(DROPOUT)(x)
-        outputs = layers.Dense(4, activation="relu")(x)
-
-        return keras.Model(inputs, outputs)
 
     model = make_model(input_shape=IMAGE_SIZE + (3,))
     # keras.utils.plot_model(model, show_shapes=True)
@@ -381,7 +404,7 @@ if "evaluate" in TODO:
 
 if "test" in TODO:
 
-    def test(img, answers=None, show=False, figure_name="Test"):
+    def test(img, answer_coords=None, show=False, figure_name="Test"):
 
         print("\nTesting : " + str(figure_name))
 
@@ -389,21 +412,28 @@ if "test" in TODO:
         img_array = keras.utils.img_to_array(img.resize(IMAGE_SIZE))
         img_array = tf.expand_dims(img_array, 0)  # Create batch axis
 
-        decimal_predictions = model.predict(img_array)[0]
-        pred_top_left_x, pred_top_left_y          = int(decimal_predictions[0] * img_w), int(decimal_predictions[1] * img_h)
-        pred_bottom_right_x, pred_bottom_right_y  = int(decimal_predictions[2] * img_w), int(decimal_predictions[3] * img_h)
-        predictions = (pred_top_left_x, pred_top_left_y, pred_bottom_right_x, pred_bottom_right_y)
+        prediction_percentage_coords = model.predict(img_array)[0]
+        prediction_percentage_boxes = [ 
+            (
+                int(prediction_percentage_coords[i+0] * img_w), 
+                int(prediction_percentage_coords[i+1] * img_h), 
+                int(prediction_percentage_coords[i+2] * img_w), 
+                int(prediction_percentage_coords[i+3] * img_h)
+            )
+            for i in range(0, len(prediction_percentage_coords), 4)
+        ]
+        prediction_coords = [ coord for box in prediction_percentage_boxes for coord in box ]
         
-        if not(answers is None):
-            print("Expected: " + str(answers))
-        print("Predicted: " + str(predictions))
+        if not(answer_coords is None):
+            print("Expected: " + str(answer_coords))
+        print("Predicted: " + str(prediction_coords))
 
-        displayImageWithTargets(img, answers, predictions, show=show, figure_name=figure_name)
+        displayImageWithTargets(img, answer_coords, prediction_coords, show=show, figure_name=figure_name)
 
     for image_id_to_test in IMAGE_IDS_TO_TEST:
 
-        image, box = extractDataFromId(image_id_to_test)
-        test(image, answers=box, show=False, figure_name="Image " + str(image_id_to_test))
+        ( ( image, coords ), ( _, _ ) ) = extractDataFromId(image_id_to_test)
+        test(image, answer_coords=coords, show=False, figure_name="Image " + str(image_id_to_test))
     
     plt.show()
 

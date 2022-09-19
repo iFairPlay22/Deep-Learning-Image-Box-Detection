@@ -1,6 +1,7 @@
-datasets/caltech-101/*
-saves/checkpoints/*
-saves/graphs/*
+datasets/
+saves/checkpoints/
+saves/graphs/
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
