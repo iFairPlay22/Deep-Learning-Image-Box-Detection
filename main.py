@@ -1,8 +1,9 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow import keras
+from keras.applications import ResNet152 as EncoderModel
 from keras.models import Sequential, Model
-from keras.layers import Conv2D, MaxPooling2D, Dense, Activation, Dropout, Flatten, BatchNormalization
+from keras.layers import Conv2D, MaxPooling2D, Dense, Activation, Dropout, Flatten, BatchNormalization, Input
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
@@ -55,7 +56,7 @@ MAX_POINTS_BY_IMAGE    = MAX_DETECTABLE_OBJECTS * MAX_POINTS_BY_OBJECT
 
 # TRAIN
 TRAINING_PATIENCE   = 10
-EPOCHS              = 50
+EPOCHS              = 250
 BATCH_SIZE          = 32
 DROPOUT             = .5
 LEARNING_RATE       = 0.001
@@ -157,8 +158,8 @@ DATASETS_ANNOTATIONS_PATHS = getPathsByIdFromFolder(ANNOTATIONS_FOLDER)
 
 def getPathsFromId(id):
 
-    imagePath      = DATASETS_BOX_PATHS[id]
-    annotationPath = DATASETS_ANNOTATIONS_PATHS[id]
+    imagePath      = DATASETS_BOX_PATHS[id] if id in DATASETS_BOX_PATHS else None
+    annotationPath = DATASETS_ANNOTATIONS_PATHS[id] if id in DATASETS_ANNOTATIONS_PATHS else None
 
     if not(imagePath) or not(annotationPath):
         print("\nWarning: Can't find the image with the id" + str(image_id_to_test))
@@ -267,43 +268,19 @@ if "train" in TODO or "evaluate" in TODO:
 if "train" in TODO or "evaluate" in TODO or "test" in TODO:
     
     def make_model(input_shape):
-        kernel_size = 3
-    
-        model = Sequential()
-
-        model.add(Conv2D(16, (kernel_size), strides=(1,1), padding='valid', input_shape=input_shape))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-    #     model.add(MaxPooling2D((2,2)))
-
-        model.add(Conv2D(32, (kernel_size), strides=(1,1), padding='valid'))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-    #     model.add(MaxPooling2D((2,2)))
-
-        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-    #     model.add(MaxPooling2D((2,2)))
-
-        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-        model.add(MaxPooling2D((2,2)))
-
-        model.add(Conv2D(64, (kernel_size), strides=(1,1), padding='valid'))
-        model.add(BatchNormalization())
-        model.add(Activation('relu'))
-        model.add(MaxPooling2D((2,2)))
         
-        model.add(Flatten())
-    #     model.add(Dense(64, activation='relu'))
-        model.add(Dropout(DROPOUT))
+        encoder = EncoderModel(weights="imagenet", include_top=False, input_tensor=Input(shape=input_shape))
+        encoder.trainable = False
 
-        model.add(Dense(MAX_POINTS_BY_IMAGE, activation='relu'))
+        i = encoder.input
+        o = encoder.output
+        o = Flatten()(o)
+        o = Dense(256, activation="relu")(o)
+        o = Dense(128, activation="relu")(o)
+        o = Dense(MAX_POINTS_BY_IMAGE, activation="sigmoid")(o)
 
-        return model
-
+        # construct the model we will fine-tune for bounding box regression
+        return Model(inputs=i, outputs=o)
 
     model = make_model(input_shape=IMAGE_SIZE + (3,))
     # keras.utils.plot_model(model, show_shapes=True)
