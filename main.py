@@ -14,6 +14,7 @@ import re
 import random
 from bs4 import BeautifulSoup
 from tqdm import tqdm
+import scipy.io
 
 ####################################################################################################
 ###> Remove warnings & info message...
@@ -25,19 +26,19 @@ absl.logging.set_verbosity(absl.logging.ERROR)
 
 # ACTIONS
 TODO = [ 
-    "from_scratch",
-    "preprocess", 
-    "train", 
-    "evaluate", 
+    # "from_scratch",
+    # "preprocess", 
+    # "train", 
+    # "evaluate", 
     "test", 
 ]
 
 # DATASETS
-DATASET_FOLDER     = "datasets/"
-IMAGES_FOLDER      = DATASET_FOLDER + "images/"
-ANNOTATIONS_FOLDER = DATASET_FOLDER + "annotations/"
+DATASET_FOLDER     = "datasets/caltech-101/"
+IMAGES_FOLDER      = DATASET_FOLDER + "101_ObjectCategories/airplanes/"
+ANNOTATIONS_FOLDER = DATASET_FOLDER + "Annotations/Airplanes_Side_2/"
 ALLOWED_EXTENSIONS = [ ".jpg", ".jpeg", ".png" ]
-TRAINING_RATIO     = .8
+TRAINING_RATIO     = .9
 VALIDATION_RATIO   = .2
 IMAGE_SIZE         = (224, 224)
 
@@ -49,23 +50,17 @@ GRAPHS_TRAINING_ACCURACY_FILE_NAME  = "training_accuracy_history.png"
 CHECKPOINTS_PATH                    = SAVES_PATH + "checkpoints/"
 CHECKPOINTS_FILE_NAME               = "best_weights"
 
-# DETECTION
-MAX_DETECTABLE_OBJECTS = 20
-MAX_POINTS_BY_OBJECT   = 4
-MAX_POINTS_BY_IMAGE    = MAX_DETECTABLE_OBJECTS * MAX_POINTS_BY_OBJECT
-
 # TRAIN
-TRAINING_PATIENCE   = 10
-EPOCHS              = 250
+TRAINING_PATIENCE   = 2
+EPOCHS              = 25
 BATCH_SIZE          = 32
 DROPOUT             = .5
-LEARNING_RATE       = 0.001
+LEARNING_RATE       = 1e-4
 
 # TEST
 NUMBER_OF_IMAGES_TO_TEST    = 5
 MIN_ID_TO_TEST              = 1
 MAX_ID_TO_TEST              = 50
-IMAGE_IDS_TO_TEST           = [ random.randint(MIN_ID_TO_TEST, MAX_ID_TO_TEST) for _ in range(NUMBER_OF_IMAGES_TO_TEST)]
 
 ####################################################################################################
 ###> Launching the programm
@@ -162,7 +157,7 @@ def getPathsFromId(id):
     annotationPath = DATASETS_ANNOTATIONS_PATHS[id] if id in DATASETS_ANNOTATIONS_PATHS else None
 
     if not(imagePath) or not(annotationPath):
-        print("\nWarning: Can't find the image with the id" + str(image_id_to_test))
+        print("\nWarning: Can't find the image with the id " + str(image_id_to_test))
         return None
 
     return imagePath, annotationPath
@@ -170,33 +165,24 @@ def getPathsFromId(id):
 def extractDataFromId(id):
 
     image_path, annotation_path = getPathsFromId(id)
-    with open(annotation_path, 'r') as annotation_file:
-        annotation_data = BeautifulSoup(annotation_file.read(), "xml")
         
     # Extract image
     image = keras.utils.load_img(image_path)
-    image_w = int(annotation_data.find('width').text)
-    image_h = int(annotation_data.find('height').text)
+    image_w, image_h = image.size[:2]
 
     # Image processing
     processed_image = keras.utils.img_to_array(image.resize(IMAGE_SIZE))
+    processed_image = np.array(processed_image, dtype="float32") / 255.0
 
     # Extract boxes
-    boxes_data = annotation_data.find_all('bndbox')
-    boxes = [ (int(box.find('xmin').text), int(box.find('ymin').text), int(box.find('xmax').text), int(box.find('ymax').text)) for box in boxes_data ]
-    coords = [ coord for box in boxes for coord in box ]
+    box_data = tuple(scipy.io.loadmat(annotation_path)["box_coord"][0])
+    min_x, min_y, max_x, max_y = box_data[3], box_data[1], box_data[2], box_data[0]
+    box_data = np.array([ min_x, min_y, max_x, max_y ], dtype="float32")
 
-    # Boxes processing
+    # Boxes processing : store position in %
+    processed_box_data =  np.array([ min_x / image_w, min_y / image_h, max_x / image_w, max_y / image_h ], dtype="float32")
 
-    #> Store position in %
-    full_percentage_boxes = [ ( float(min_x) / image_w, float(min_y) / image_h, float(max_x) / image_w, float(max_y) / image_h ) for min_x, min_y, max_x, max_y in boxes ]
-    full_percentage_coords = [ full_percentage_coord for full_percentage_box in full_percentage_boxes for full_percentage_coord in full_percentage_box ]
-
-    #> Complete with empty boxes
-    empty_percentage_coords = [ 0 for i in range(len(full_percentage_coords), MAX_POINTS_BY_IMAGE) ]
-    processed_percentage_coords =  full_percentage_coords + empty_percentage_coords
-
-    return ( ( image, coords ), ( processed_image, processed_percentage_coords ) )
+    return ( ( image, box_data ), ( processed_image, processed_box_data ) )
 
 def plotRectangle(min_x, min_y, max_x, max_y, color, linestyle="solid"):
 
@@ -206,26 +192,24 @@ def plotRectangle(min_x, min_y, max_x, max_y, color, linestyle="solid"):
         color=color, linestyle=linestyle
     )
 
-def displayImageWithTargets(img, tgts=None, preds=None, show=True, figure_name="Image with targets"):
+def displayImageWithTargets(img, img_dim, tgts=None, preds=None, show=True, figure_name="Image with targets"):
     
     plt.figure(figure_name)
-    plt.imshow(img)
+    plt.imshow(img.resize(img_dim))
 
     # Image dimentions
-    image_w, image_h = image.size[:2]
-    plotRectangle(0, 0, image_w, image_h, color="grey", linestyle="solid")
+    img_w, img_h = img_dim
+    plotRectangle(0, 0, img_w, img_h, color="grey", linestyle="solid")
 
     # Targets
     if not(tgts is None):
-        for i in range(len(tgts)//4):
-            min_x, min_y, max_x, max_y = tgts[i*4:i*4+4]
-            plotRectangle(min_x, min_y, max_x, max_y, color="white", linestyle="dashed")
+        min_x, min_y, max_x, max_y = tgts
+        plotRectangle(min_x*img_w, min_y*img_h, max_x*img_w, max_y*img_h, color="black", linestyle="dashed")
 
     # Pred
     if not(preds is None):
-        for i in range(len(preds)//4):
-            min_x, min_y, max_x, max_y = preds[i*4:i*4+4]
-            plotRectangle(min_x, min_y, max_x, max_y, color="red", linestyle="dashed")
+        min_x, min_y, max_x, max_y = preds
+        plotRectangle(min_x*img_w, min_y*img_h, max_x*img_w, max_y*img_h, color="red", linestyle="dashed")
 
     if show:
         plt.show()
@@ -241,11 +225,12 @@ if "train" in TODO or "evaluate" in TODO:
 
     for id in tqdm(ids):
 
-        ( ( image, coords ), ( processed_image, processed_coords ) ) = extractDataFromId(id)
+        ( ( image, box ), ( processed_image, processed_box ) ) = extractDataFromId(id)
         images.append(processed_image)
-        targets.append(processed_coords)
+        targets.append(processed_box)
 
-        # displayImageWithTargets(image, coords, figure_name="1", show=False)
+        # displayImageWithTargets(image, image.size, processed_box, figure_name="Original (" + str(id) + ")", show=False)
+        # displayImageWithTargets(image, IMAGE_SIZE, processed_box, figure_name="Resized (" + str(id) + ")", show=False)
         # plt.show()
 
         pass
@@ -275,9 +260,10 @@ if "train" in TODO or "evaluate" in TODO or "test" in TODO:
         i = encoder.input
         o = encoder.output
         o = Flatten()(o)
-        o = Dense(256, activation="relu")(o)
         o = Dense(128, activation="relu")(o)
-        o = Dense(MAX_POINTS_BY_IMAGE, activation="sigmoid")(o)
+        o = Dense(64, activation="relu")(o)
+        o = Dense(32, activation="relu")(o)
+        o = Dense(4, activation="sigmoid")(o)
 
         # construct the model we will fine-tune for bounding box regression
         return Model(inputs=i, outputs=o)
@@ -381,36 +367,42 @@ if "evaluate" in TODO:
 
 if "test" in TODO:
 
-    def test(img, answer_coords=None, show=False, figure_name="Test"):
+    def test(id):
 
-        print("\nTesting : " + str(figure_name))
+        print("\nTesting : " + str(id))
+
+        ( ( img, box ), ( processed_img, processed_box ) ) = extractDataFromId(id)
 
         (img_w, img_h) = img.size[:2]
-        img_array = keras.utils.img_to_array(img.resize(IMAGE_SIZE))
-        img_array = tf.expand_dims(img_array, 0)  # Create batch axis
+        img_array = tf.expand_dims(processed_img, 0)
 
-        prediction_percentage_coords = model.predict(img_array)[0]
-        prediction_percentage_boxes = [ 
-            (
-                int(prediction_percentage_coords[i+0] * img_w), 
-                int(prediction_percentage_coords[i+1] * img_h), 
-                int(prediction_percentage_coords[i+2] * img_w), 
-                int(prediction_percentage_coords[i+3] * img_h)
-            )
-            for i in range(0, len(prediction_percentage_coords), 4)
+        prediction_percentage_box = list(model.predict(img_array)[0])
+        prediction_box = [ 
+            prediction_percentage_box[0] * img_w, 
+            prediction_percentage_box[1] * img_h, 
+            prediction_percentage_box[2] * img_w, 
+            prediction_percentage_box[3] * img_h
         ]
-        prediction_coords = [ coord for box in prediction_percentage_boxes for coord in box ]
         
-        if not(answer_coords is None):
-            print("Expected: " + str(answer_coords))
-        print("Predicted: " + str(prediction_coords))
+        print("Expected (px) : " + str(box))
+        print("Predicted (px) : " + str(prediction_box))
 
-        displayImageWithTargets(img, answer_coords, prediction_coords, show=show, figure_name=figure_name)
+        print("Expected (%) : " + str(processed_box))
+        print("Predicted (%) : " + str(prediction_percentage_box))
 
-    for image_id_to_test in IMAGE_IDS_TO_TEST:
+        displayImageWithTargets(img, img.size,   processed_box, prediction_percentage_box, show=False, figure_name="Original (" + str(id) + ")")
+        displayImageWithTargets(img, IMAGE_SIZE, processed_box, prediction_percentage_box, show=False, figure_name="Resized (" + str(id) + ")")
+        plt.show()
 
-        ( ( image, coords ), ( _, _ ) ) = extractDataFromId(image_id_to_test)
-        test(image, answer_coords=coords, show=False, figure_name="Image " + str(image_id_to_test))
+    # Add random images to test
+    images_to_test = set()
+    while len(images_to_test) != NUMBER_OF_IMAGES_TO_TEST:
+        id = random.randint(MIN_ID_TO_TEST, MAX_ID_TO_TEST)
+        if getPathsFromId(id) is not None:
+            images_to_test.add(id)
+
+    for image_id_to_test in images_to_test:
+        test(image_id_to_test)
     
     plt.show()
 
