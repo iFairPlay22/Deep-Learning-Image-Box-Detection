@@ -26,17 +26,17 @@ absl.logging.set_verbosity(absl.logging.ERROR)
 
 # ACTIONS
 TODO = [ 
-    # "from_scratch",
-    # "preprocess", 
-    # "train", 
-    # "evaluate", 
+    "from_scratch",
+    "preprocess", 
+    "train", 
+    "evaluate", 
     "test", 
 ]
 
 # DATASETS
-DATASET_FOLDER     = "datasets/caltech-101/"
-IMAGES_FOLDER      = DATASET_FOLDER + "101_ObjectCategories/airplanes/"
-ANNOTATIONS_FOLDER = DATASET_FOLDER + "Annotations/Airplanes_Side_2/"
+DATASET_FOLDER     = "datasets/planes/"
+IMAGES_FOLDER      = DATASET_FOLDER + "Images/"
+ANNOTATIONS_FOLDER = DATASET_FOLDER + "Annotations/"
 ALLOWED_EXTENSIONS = [ ".jpg", ".jpeg", ".png" ]
 TRAINING_RATIO     = .9
 VALIDATION_RATIO   = .2
